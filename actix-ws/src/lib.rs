@@ -22,7 +22,7 @@ mod session;
 mod stream;
 
 #[cfg(feature = "compress-deflate")]
-pub use self::deflate::DeflateConfig;
+pub use self::deflate::{DeflateCodec, DeflateConfig};
 pub use self::{
     aggregated::{AggregatedMessage, AggregatedMessageStream},
     session::{Closed, Session},
@@ -102,7 +102,11 @@ pub fn handle_with_permessage_deflate(
 
     let session = Session::new(tx);
 
-    let (message_stream, streaming_body) = if let Some((compress, decompress)) = deflate {
+    let (message_stream, streaming_body) = if let Some(DeflateCodec {
+        compress,
+        decompress,
+    }) = deflate
+    {
         (
             MessageStream::new_deflate(body.into_inner(), decompress),
             StreamingBody::new_deflate(rx, compress),

@@ -192,14 +192,11 @@ impl DeflateConfig {
         Ok(None)
     }
 
-    pub(super) fn create_session(
+    pub fn create_session(
         &self,
         request: &HttpRequest,
         response: &mut ResponseBuilder,
-    ) -> Result<
-        Option<(DeflateCompressionContext, DeflateDecompressionContext)>,
-        DeflateHandshakeError,
-    > {
+    ) -> Result<Option<DeflateCodec>, DeflateHandshakeError> {
         let Some(params) = Self::query_session_parameters(request)? else {
             return Ok(None);
         };
@@ -273,7 +270,6 @@ impl DeflateConfig {
             codec: Codec::new(),
 
             client_no_context_takeover,
-            client_max_window_bits,
 
             compress: flate2::Compress::new_with_window_bits(
                 Default::default(),
@@ -288,15 +284,18 @@ impl DeflateConfig {
             codec: Codec::new(),
 
             server_no_context_takeover,
-            server_max_window_bits,
 
             decompress: flate2::Decompress::new_with_window_bits(false, server_max_window_bits),
+
             decode_continuation: false,
             total_bytes_written: 0,
             total_bytes_read: 0,
         };
 
-        Ok(Some((compression_context, decompression_context)))
+        Ok(Some(DeflateCodec {
+            compress: compression_context,
+            decompress: decompression_context,
+        }))
     }
 }
 
@@ -304,7 +303,6 @@ pub(super) struct DeflateDecompressionContext {
     codec: Codec,
 
     server_no_context_takeover: bool,
-    server_max_window_bits: u8,
 
     decompress: flate2::Decompress,
 
@@ -439,7 +437,6 @@ pub(super) struct DeflateCompressionContext {
     codec: Codec,
 
     client_no_context_takeover: bool,
-    client_max_window_bits: u8,
 
     compress: flate2::Compress,
     total_bytes_written: u64,
@@ -549,5 +546,29 @@ impl Encoder<Message> for DeflateCompressionContext {
         }
 
         Ok(())
+    }
+}
+
+pub struct DeflateCodec {
+    pub(super) compress: DeflateCompressionContext,
+    pub(super) decompress: DeflateDecompressionContext,
+}
+
+impl Encoder<Message> for DeflateCodec {
+    type Error = ProtocolError;
+
+    #[inline]
+    fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        self.compress.encode(item, dst)
+    }
+}
+
+impl Decoder for DeflateCodec {
+    type Item = Frame;
+    type Error = ProtocolError;
+
+    #[inline]
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        self.decompress.decode(src)
     }
 }
