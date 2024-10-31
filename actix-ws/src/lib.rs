@@ -22,7 +22,9 @@ mod session;
 mod stream;
 
 #[cfg(feature = "compress-deflate")]
-pub use self::deflate::{DeflateCodec, DeflateConfig};
+pub use self::deflate::{
+    DeflateCodec, DeflateCompressionContext, DeflateConfig, DeflateDecompressionContext,
+};
 pub use self::{
     aggregated::{AggregatedMessage, AggregatedMessageStream},
     session::{Closed, Session},
