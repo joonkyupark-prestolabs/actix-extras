@@ -1,7 +1,6 @@
 use actix_http::header::{self, HeaderValue};
 use actix_http::header::{HeaderName, SEC_WEBSOCKET_EXTENSIONS};
 use actix_http::ws::{Codec, Frame, Item, Message, OpCode, Parser, ProtocolError, RsvBits};
-use actix_http::ResponseBuilder;
 use actix_web::web::BytesMut;
 use actix_web::HttpRequest;
 use tokio_util::codec::{Decoder, Encoder};
@@ -302,7 +301,7 @@ impl DeflateConfig {
     }
 }
 
-pub(super) struct DeflateDecompressionContext {
+pub struct DeflateDecompressionContext {
     codec: Codec,
 
     server_no_context_takeover: bool,
@@ -436,7 +435,7 @@ impl Decoder for DeflateDecompressionContext {
     }
 }
 
-pub(super) struct DeflateCompressionContext {
+pub struct DeflateCompressionContext {
     codec: Codec,
 
     client_no_context_takeover: bool,
@@ -553,8 +552,8 @@ impl Encoder<Message> for DeflateCompressionContext {
 }
 
 pub struct DeflateCodec {
-    pub(super) compress: DeflateCompressionContext,
-    pub(super) decompress: DeflateDecompressionContext,
+    pub compress: DeflateCompressionContext,
+    pub decompress: DeflateDecompressionContext,
 }
 
 impl Encoder<Message> for DeflateCodec {
