@@ -8,6 +8,7 @@ use tokio_util::codec::{Decoder, Encoder};
 
 const MAX_WINDOW_BITS_RANGE: std::ops::RangeInclusive<u8> = 9..=15;
 const DEFAULT_WINDOW_BITS: u8 = 15;
+const BUF_SIZE: usize = 2048;
 
 const RSV_BIT_DEFLATE_FLAG: RsvBits = RsvBits::RSV1;
 
@@ -83,7 +84,7 @@ pub struct DeflateConfig {
 impl Default for DeflateConfig {
     fn default() -> Self {
         Self {
-            server_no_context_takeover: true,
+            server_no_context_takeover: false,
             client_no_context_takeover: false,
             server_max_window_bits: None,
             client_max_window_bits: None,
@@ -265,26 +266,34 @@ impl DeflateConfig {
             HeaderValue::from_str(response_extension.join("; ").as_str()).unwrap(),
         ));
 
+        let client_max_window_bits = client_max_window_bits.unwrap_or(DEFAULT_WINDOW_BITS);
+        let server_max_window_bits = server_max_window_bits.unwrap_or(DEFAULT_WINDOW_BITS);
+
         let compression_context = DeflateCompressionContext {
             codec: Codec::new(),
 
             client_no_context_takeover,
+            client_max_window_bits,
+
             compress: flate2::Compress::new_with_window_bits(
                 Default::default(),
                 false,
-                client_max_window_bits.unwrap_or(DEFAULT_WINDOW_BITS),
+                client_max_window_bits,
             ),
+            total_bytes_written: 0,
+            total_bytes_read: 0,
         };
 
         let decompression_context = DeflateDecompressionContext {
             codec: Codec::new(),
 
             server_no_context_takeover,
-            decompress: flate2::Decompress::new_with_window_bits(
-                false,
-                server_max_window_bits.unwrap_or(DEFAULT_WINDOW_BITS),
-            ),
+            server_max_window_bits,
+
+            decompress: flate2::Decompress::new_with_window_bits(false, server_max_window_bits),
             decode_continuation: false,
+            total_bytes_written: 0,
+            total_bytes_read: 0,
         };
 
         Ok(Some((compression_context, decompression_context)))
@@ -295,18 +304,28 @@ pub(super) struct DeflateDecompressionContext {
     codec: Codec,
 
     server_no_context_takeover: bool,
+    server_max_window_bits: u8,
+
     decompress: flate2::Decompress,
 
     decode_continuation: bool,
+    total_bytes_written: u64,
+    total_bytes_read: u64,
 }
 
 impl DeflateDecompressionContext {
     pub(super) fn max_size(mut self, max_size: usize) -> Self {
         self.codec = self.codec.max_size(max_size);
         self.decode_continuation = false;
-        self.decompress.reset(false);
+        self.reset();
 
         self
+    }
+
+    fn reset(&mut self) {
+        self.decompress.reset(false);
+        self.total_bytes_read = 0;
+        self.total_bytes_written = 0;
     }
 }
 
@@ -315,10 +334,14 @@ impl Decoder for DeflateDecompressionContext {
     type Error = ProtocolError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        let x = src.clone();
+
         let frame = self.codec.decode(src)?;
         let Some(mut frame) = frame else {
             return Ok(None);
         };
+
+        println!("{frame:?} {x:?}");
 
         let rsv_bits = self.codec.get_inbound_rsv_bits().unwrap_or_default();
         if !rsv_bits.contains(RSV_BIT_DEFLATE_FLAG) {
@@ -362,30 +385,50 @@ impl Decoder for DeflateDecompressionContext {
             _ => unreachable!(),
         };
 
-        let mut output = vec![];
-        let mut buf = [0u8; 2048];
+        let mut output: Vec<u8> = vec![];
+        let mut buf = [0u8; BUF_SIZE];
 
-        let mut total_written: u64 = 0;
-        while self.decompress.total_in() < bytes.len() as u64 {
-            if let Err(e) = self.decompress.decompress(
-                &bytes[self.decompress.total_in() as usize..],
-                &mut buf,
-                flate2::FlushDecompress::Sync,
-            ) {
-                return Err(ProtocolError::Io(e.into()));
+        let mut offset: usize = 0;
+        loop {
+            let res = if offset >= bytes.len() {
+                self.decompress
+                    .decompress(
+                        &[0x00, 0x00, 0xff, 0xff],
+                        &mut buf,
+                        flate2::FlushDecompress::Finish,
+                    )
+                    .map_err(|e| {
+                        self.reset();
+                        ProtocolError::Io(e.into())
+                    })?
+            } else {
+                self.decompress
+                    .decompress(&bytes[offset..], &mut buf, flate2::FlushDecompress::None)
+                    .map_err(|e| {
+                        self.reset();
+                        ProtocolError::Io(e.into())
+                    })?
+            };
+
+            let read = self.decompress.total_in() - self.total_bytes_read;
+            let written = self.decompress.total_out() - self.total_bytes_written;
+
+            offset += read as usize;
+            self.total_bytes_read += read;
+            if written > 0 {
+                output.extend(buf.iter().take(written as usize));
+                self.total_bytes_written += written;
             }
 
-            let written = self.decompress.total_out() - total_written;
-            output.extend(&buf[0..written as usize]);
-            total_written += written;
+            if res != flate2::Status::Ok {
+                break;
+            }
         }
 
         *bytes = output.into();
 
-        if fin
-        /*&& self.server_no_context_takeover*/
-        {
-            self.decompress.reset(false);
+        if fin && self.server_no_context_takeover {
+            self.reset();
         }
 
         Ok(Some(frame))
@@ -396,7 +439,19 @@ pub(super) struct DeflateCompressionContext {
     codec: Codec,
 
     client_no_context_takeover: bool,
+    client_max_window_bits: u8,
+
     compress: flate2::Compress,
+    total_bytes_written: u64,
+    total_bytes_read: u64,
+}
+
+impl DeflateCompressionContext {
+    fn reset(&mut self) {
+        self.compress.reset();
+        self.total_bytes_read = 0;
+        self.total_bytes_written = 0;
+    }
 }
 
 impl Encoder<Message> for DeflateCompressionContext {
@@ -417,22 +472,41 @@ impl Encoder<Message> for DeflateCompressionContext {
             }
         };
 
-        let mut output = Vec::new();
-        let mut buf = [0u8; 2048];
+        let mut output = vec![];
+        let mut buf = [0u8; BUF_SIZE];
 
-        let mut total_written: u64 = 0;
-        while self.compress.total_in() < bytes.len() as u64 {
-            if let Err(e) = self.compress.compress(
-                &bytes[self.compress.total_in() as usize..],
-                &mut buf,
-                flate2::FlushCompress::Sync,
-            ) {
-                return Err(ProtocolError::Io(e.into()));
+        loop {
+            let total_in = self.compress.total_in() - self.total_bytes_read;
+            let res = if total_in >= bytes.len() as u64 {
+                self.compress
+                    .compress(&[], &mut buf, flate2::FlushCompress::Sync)
+                    .map_err(|e| {
+                        self.reset();
+                        ProtocolError::Io(e.into())
+                    })?
+            } else {
+                self.compress
+                    .compress(&bytes, &mut buf, flate2::FlushCompress::None)
+                    .map_err(|e| {
+                        self.reset();
+                        ProtocolError::Io(e.into())
+                    })?
+            };
+
+            let written = self.compress.total_out() - self.total_bytes_written;
+            if written > 0 {
+                output.extend(buf.iter().take(written as usize));
+                self.total_bytes_written += written;
             }
 
-            let written = self.compress.total_out() - total_written;
-            output.extend(&buf[0..written as usize]);
-            total_written += written;
+            if res != flate2::Status::Ok {
+                break;
+            }
+        }
+        self.total_bytes_read = self.compress.total_in();
+
+        if output.iter().rev().take(4).eq(&[0xff, 0xff, 0x00, 0x00]) {
+            output.drain(output.len() - 4..);
         }
 
         // Set RSV flag accordingly when sending compress payload.
@@ -465,11 +539,13 @@ impl Encoder<Message> for DeflateCompressionContext {
             _ => unreachable!(),
         }
 
-        let fin = !matches!(item, Message::Continuation(_));
-        if fin
-        /*&& self.clientp_no_context_takeover*/
-        {
-            self.compress.reset();
+        let fin = matches!(
+            item,
+            Message::Text(_) | Message::Binary(_) | Message::Continuation(Item::Last(_))
+        );
+
+        if fin && self.client_no_context_takeover {
+            self.reset();
         }
 
         Ok(())
