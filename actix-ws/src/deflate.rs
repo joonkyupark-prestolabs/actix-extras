@@ -74,6 +74,7 @@ struct DeflateSessionParameters {
     client_max_window_bits: Option<ClientMaxWindowBits>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeflateConfig {
     pub server_no_context_takeover: bool,
     pub client_no_context_takeover: bool,
