@@ -96,17 +96,21 @@ pub fn handle_with_permessage_deflate(
     config: &deflate::DeflateConfig,
 ) -> Result<(HttpResponse, Session, MessageStream), actix_web::Error> {
     let mut response = handshake(req.head())?;
-    let deflate = config.create_session(req, &mut response)?;
+    let deflate = config.create_session(req)?;
 
     let (tx, rx) = channel(32);
 
     let session = Session::new(tx);
 
-    let (message_stream, streaming_body) = if let Some(DeflateCodec {
-        compress,
-        decompress,
-    }) = deflate
+    let (message_stream, streaming_body) = if let Some((
+        DeflateCodec {
+            compress,
+            decompress,
+        },
+        header_pair,
+    )) = deflate
     {
+        response.append_header(header_pair);
         (
             MessageStream::new_deflate(body.into_inner(), decompress),
             StreamingBody::new_deflate(rx, compress),

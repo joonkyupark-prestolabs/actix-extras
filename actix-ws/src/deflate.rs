@@ -1,5 +1,5 @@
-use actix_http::header::SEC_WEBSOCKET_EXTENSIONS;
 use actix_http::header::{self, HeaderValue};
+use actix_http::header::{HeaderName, SEC_WEBSOCKET_EXTENSIONS};
 use actix_http::ws::{Codec, Frame, Item, Message, OpCode, Parser, ProtocolError, RsvBits};
 use actix_http::ResponseBuilder;
 use actix_web::web::BytesMut;
@@ -196,8 +196,7 @@ impl DeflateConfig {
     pub fn create_session(
         &self,
         request: &HttpRequest,
-        response: &mut ResponseBuilder,
-    ) -> Result<Option<DeflateCodec>, DeflateHandshakeError> {
+    ) -> Result<Option<(DeflateCodec, (HeaderName, HeaderValue))>, DeflateHandshakeError> {
         let Some(params) = Self::query_session_parameters(request)? else {
             return Ok(None);
         };
@@ -259,10 +258,10 @@ impl DeflateConfig {
             response_extension.push(format!("client_max_window_bits={client_max_window_bits}"));
         }
 
-        response.append_header((
+        let response_header_pair = (
             SEC_WEBSOCKET_EXTENSIONS,
             HeaderValue::from_str(response_extension.join("; ").as_str()).unwrap(),
-        ));
+        );
 
         let client_max_window_bits = client_max_window_bits.unwrap_or(DEFAULT_WINDOW_BITS);
         let server_max_window_bits = server_max_window_bits.unwrap_or(DEFAULT_WINDOW_BITS);
@@ -293,10 +292,13 @@ impl DeflateConfig {
             total_bytes_read: 0,
         };
 
-        Ok(Some(DeflateCodec {
-            compress: compression_context,
-            decompress: decompression_context,
-        }))
+        Ok(Some((
+            DeflateCodec {
+                compress: compression_context,
+                decompress: decompression_context,
+            },
+            response_header_pair,
+        )))
     }
 }
 
