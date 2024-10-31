@@ -24,6 +24,7 @@ mod stream;
 #[cfg(feature = "compress-deflate")]
 pub use self::deflate::{
     DeflateCodec, DeflateCompressionContext, DeflateConfig, DeflateDecompressionContext,
+    DeflateHandshakeError,
 };
 pub use self::{
     aggregated::{AggregatedMessage, AggregatedMessageStream},

@@ -12,7 +12,7 @@ const BUF_SIZE: usize = 2048;
 const RSV_BIT_DEFLATE_FLAG: RsvBits = RsvBits::RSV1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum DeflateHandshakeError {
+pub enum DeflateHandshakeError {
     InvalidExtensionHeader,
     UnknownWebSocketParameters(Vec<String>),
     DuplicateParameter(&'static str),
